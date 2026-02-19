@@ -132,7 +132,7 @@ class BangumiMetadata(Source):
             data.get("infobox", []), ["出版社"], only_first=True
         )
         book["comments"] = data.get("summary", "")
-        book["rating"] = data.get("rating", {}).get("score", 0)
+        book["rating"] = float(data.get("rating", {}).get("score", 0)) / 2
         book["identifier:isbn"] = self._parse_infobox(
             data.get("infobox", []), ["ISBN"], only_first=True
         )
