@@ -6,7 +6,7 @@
 
 目前支持的元数据种类有：标题、作者、标签、发行日期、出版方、简介、评分、ISBN 书号、Bangumi ID
 
-## Installation
+## 安装
 
 从 Release 页面下载最新版本的 `calibre_bangumi.zip` 文件，在 Calibre 的插件管理界面安装该 ZIP 文件
 
