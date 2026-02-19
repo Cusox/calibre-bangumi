@@ -6,12 +6,9 @@ from calibre.ebooks.metadata.book.base import Metadata
 from calibre.ebooks.metadata.sources.base import Option, Source
 from calibre.utils.date import parse_date
 
-BANGUMI_BASE_URL = "https://bangumi.tv/"
-BANGUMI_API_URL = "https://api.bgm.tv/v0/"
-BANGUMI_SUBJECT_URL = BANGUMI_BASE_URL + "subject/%s"
-BANGUMI_API_SUBJECT_URL = BANGUMI_API_URL + "subjects/%s"
-BANGUMI_API_SUBJECTS_URL = BANGUMI_API_URL + "subjects/%s/subjects"
-BANGUMI_API_SEARCH_URL = BANGUMI_API_URL + "search/subjects"
+BANGUMI_BASE_URL = "https://bangumi.tv"
+BANGUMI_API_URL = "https://api.bgm.tv/v0"
+
 PLUGIN_VERSION = (1, 0, 0)
 
 CONFIG = {
@@ -21,8 +18,8 @@ CONFIG = {
 
 
 class BangumiMetadata(Source):
-    name = "Bangumi Metadata Source"
-    description = "从 Bangumi 中获取书籍信息"
+    name = "Bangumi"
+    description = "Fetch book metadata from Bangumi (https://bangumi.tv/)"
     supported_platforms = ["windows", "osx", "linux"]
     author = "Cusox"
     version = PLUGIN_VERSION
@@ -108,7 +105,7 @@ class BangumiMetadata(Source):
 
         result = []
         for tag in tags:
-            if tag["count"] >= CONFIG["tag_count"]:
+            if tag["count"] >= CONFIG["tag_user_count"]:
                 result.append(tag["name"])
 
         return result[: CONFIG["tag_count"]]
@@ -151,13 +148,16 @@ class BangumiMetadata(Source):
         return mi
 
     def _query_subject(self, log, bangumi_id):
-        url = BANGUMI_API_SUBJECT_URL % bangumi_id
+        url = f"{BANGUMI_API_URL}/subjects/{bangumi_id}"
         headers = self._get_headers()
 
         res = urlopen(Request(url, headers=headers, method="GET"))
         if res.getcode() == 200:
             raw_data = res.read()
         else:
+            log.error(
+                f"Failed to fetch data for Bangumi ID {bangumi_id}: HTTP {res.getcode()}"
+            )
             return None
 
         data = json.loads(raw_data)
@@ -166,8 +166,8 @@ class BangumiMetadata(Source):
 
         return book
 
-    def _query_related_subjects(self, log, bangumi_id):
-        url = BANGUMI_API_SUBJECTS_URL % bangumi_id
+    def _query_subject_relations(self, log, bangumi_id):
+        url = f"{BANGUMI_API_URL}/subjects/{bangumi_id}/subjects"
         headers = self._get_headers()
 
         res = urlopen(Request(url, headers=headers, method="GET"))
@@ -188,13 +188,14 @@ class BangumiMetadata(Source):
     def _search_by_title(self, log, title):
         payload = {
             "keyword": title,
+            "sort": "rank",
             "filter": {
                 "type": [1],
                 "nsfw": True,
             },
         }
 
-        url = BANGUMI_API_SEARCH_URL
+        url = f"{BANGUMI_API_URL}/search/subjects"
         headers = self._get_headers()
 
         req_body = json.dumps(payload).encode("utf-8")
@@ -202,36 +203,22 @@ class BangumiMetadata(Source):
         if res.getcode() == 200:
             raw_data = res.read()
         else:
+            log.error(f"Failed to search for title '{title}': HTTP {res.getcode()}")
             return []
 
         data = json.loads(raw_data)
 
         bangumi_ids = [item["id"] for item in data.get("data", [])]
         if not bangumi_ids:
-            log.info("未找到匹配的 Bangumi 条目")
+            log.info("Cannot find any Bangumi subject matching the title.")
             return []
 
-        expanded_ids = set(bangumi_ids)
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            related_ids = executor.map(
-                lambda id: self._query_related_subjects(log, id), bangumi_ids
-            )
-
-            expanded_ids.update(rel_id for sublist in related_ids for rel_id in sublist)
-
-        log.info(f"找到{len(expanded_ids)}个匹配的 Bangumi 条目，正在查询详细信息...")
-
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            books = executor.map(lambda id: self._query_subject(log, id), expanded_ids)
-
-            return list(books)
-
-        return []
+        return bangumi_ids
 
     def get_book_url(self, identifiers):
         bangumi_id = identifiers.get("bgm", None)
         if bangumi_id is not None:
-            return ("Bangumi", bangumi_id, BANGUMI_SUBJECT_URL % bangumi_id)
+            return ("Bangumi", bangumi_id, f"{BANGUMI_BASE_URL}/subject/{bangumi_id}")
 
     def identify(
         self,
@@ -247,19 +234,39 @@ class BangumiMetadata(Source):
 
         bangumi_id = identifiers.get("bgm", None)
         if bangumi_id is not None:
-            log.info("正在查询 Bangumi ID %s...", bangumi_id)
+            log.info(f"Found book by Bangumi ID: {bangumi_id}")
 
             book = self._query_subject(log, bangumi_id)
 
-            log.info("查询 Bangumi ID %s: %s", bangumi_id, "成功" if book else "失败")
+            log.info("Success..." if book else "Failed!!!")
 
             books.append(book)
         else:
-            log.info("未提供 Bangumi ID")
-            log.info("通过 Title 进行查询...")
+            log.info("No Bangumi ID Provided...")
+            log.info("Found book by Title: %s", title)
 
-            books = self._search_by_title(log, title)
+            bangumi_ids = self._search_by_title(log, title)
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                books.extend(
+                    executor.map(lambda id: self._query_subject(log, id), bangumi_ids)
+                )
 
+            child_ids = set()
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                related_ids = executor.map(
+                    lambda id: self._query_subject_relations(log, id), bangumi_ids
+                )
+
+                for sublist in related_ids:
+                    if sublist:
+                        child_ids.update(sublist)
+
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                books.extend(
+                    executor.map(lambda id: self._query_subject(log, id), child_ids)
+                )
+
+        log.info(f"Found {len(books)} books in total.")
         for book in books:
             mi = self._to_metadata(book)
 
@@ -287,7 +294,7 @@ if __name__ == "__main__":
             # ),
             (
                 {
-                    "title": "OVERLORD",
+                    "title": "overlord 19",
                 },
                 [],
             ),
