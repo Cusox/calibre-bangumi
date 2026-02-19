@@ -64,10 +64,15 @@ class BangumiMetadata(Source):
             if key in self.prefs:
                 CONFIG[key] = self.prefs[key]
 
-    def _get_headers(self):
+    @property
+    def user_agent(self):
+        return "Cusox/calibre-bangumi"
+
+    @property
+    def headers(self):
         headers = {
             "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36",
+            "User-Agent": self.user_agent,
         }
 
         return headers
@@ -117,6 +122,7 @@ class BangumiMetadata(Source):
         book["authors"] = self._parse_infobox(
             data.get("infobox", []), ["作者", "原作", "作画", "插图", "插画"]
         )
+        book["cover"] = data.get("images", {}).get("large", None)
         book["tags"] = self._parse_tags(data.get("tags", []))
         book["pubdate"] = parse_date(
             data["date"]
@@ -136,6 +142,7 @@ class BangumiMetadata(Source):
 
     def _to_metadata(self, book):
         mi = Metadata(book["title"], book["authors"])
+        mi.cover = book["cover"]
         mi.tags = book["tags"]
         mi.pubdate = book["pubdate"]
         mi.publisher = book["publisher"]
@@ -143,13 +150,14 @@ class BangumiMetadata(Source):
         mi.rating = book["rating"]
         mi.set_identifier("bgm", str(book["identifier:bgm"]))
         if book["identifier:isbn"]:
+            mi.isbn = book["identifier:isbn"]
             mi.set_identifier("isbn", str(book["identifier:isbn"]))
 
         return mi
 
     def _query_subject(self, log, bangumi_id):
         url = f"{BANGUMI_API_URL}/subjects/{bangumi_id}"
-        headers = self._get_headers()
+        headers = self.headers
 
         res = urlopen(Request(url, headers=headers, method="GET"))
         if res.getcode() == 200:
@@ -168,7 +176,7 @@ class BangumiMetadata(Source):
 
     def _query_subject_relations(self, log, bangumi_id):
         url = f"{BANGUMI_API_URL}/subjects/{bangumi_id}/subjects"
-        headers = self._get_headers()
+        headers = self.headers
 
         res = urlopen(Request(url, headers=headers, method="GET"))
         if res.getcode() == 200:
@@ -195,8 +203,8 @@ class BangumiMetadata(Source):
             },
         }
 
-        url = f"{BANGUMI_API_URL}/search/subjects"
-        headers = self._get_headers()
+        url = f"{BANGUMI_API_URL}/search/subjects?limit=5"
+        headers = self.headers
 
         req_body = json.dumps(payload).encode("utf-8")
         res = urlopen(Request(url, headers=headers, method="POST", data=req_body))
@@ -219,6 +227,19 @@ class BangumiMetadata(Source):
         bangumi_id = identifiers.get("bgm", None)
         if bangumi_id is not None:
             return ("Bangumi", bangumi_id, f"{BANGUMI_BASE_URL}/subject/{bangumi_id}")
+
+    def get_cached_cover_url(self, identifiers):
+        url = None
+        bangumi_id = identifiers.get("bgm", None)
+        if bangumi_id is not None:
+            url = self.cached_identifier_to_cover_url(bangumi_id)
+        else:
+            isbn = identifiers.get("isbn", None)
+            if isbn is not None:
+                bangumi_id = self.cached_isbn_to_identifier(isbn)
+                url = self.cached_identifier_to_cover_url(bangumi_id)
+
+        return url
 
     def identify(
         self,
@@ -270,7 +291,41 @@ class BangumiMetadata(Source):
         for book in books:
             mi = self._to_metadata(book)
 
+            bangumi_id = mi.identifiers["bgm"]
+            if mi.isbn:
+                self.cache_isbn_to_identifier(mi.isbn, bangumi_id)
+            if mi.cover:
+                self.cache_identifier_to_cover_url(bangumi_id, mi.cover)
+            self.clean_downloaded_metadata(mi)
+
             result_queue.put(mi)
+
+    def download_cover(
+        self,
+        log,
+        result_queue,
+        abort,
+        title=None,
+        authors=None,
+        identifiers={},
+        timeout=30,
+        get_best_cover=False,
+    ):
+        cached_url = self.get_cached_cover_url(identifiers)
+        if cached_url is None:
+            log.info("No cached cover found for this book.")
+            return
+
+        log.info(f"Found cached cover URL: {cached_url}")
+        try:
+            br = self.browser
+            cover_data = br.open_novisit(cached_url, timeout=timeout).read()
+            if cover_data:
+                result_queue.put((self, cover_data))
+                log.info("Cover downloaded successfully.")
+
+        except Exception:
+            log.error(f"Failed to download cover from {cached_url}")
 
 
 if __name__ == "__main__":
