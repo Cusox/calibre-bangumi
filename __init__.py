@@ -196,14 +196,13 @@ class BangumiMetadata(Source):
     def _search_by_title(self, log, title):
         payload = {
             "keyword": title,
-            "sort": "rank",
             "filter": {
                 "type": [1],
                 "nsfw": True,
             },
         }
 
-        url = f"{BANGUMI_API_URL}/search/subjects?limit=5"
+        url = f"{BANGUMI_API_URL}/search/subjects?limit=3"
         headers = self.headers
 
         req_body = json.dumps(payload).encode("utf-8")
