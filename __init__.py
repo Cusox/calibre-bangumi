@@ -10,9 +10,10 @@ from calibre.utils.date import parse_date
 BANGUMI_BASE_URL = "https://bangumi.tv"
 BANGUMI_API_URL = "https://api.bgm.tv/v0"
 
-PLUGIN_VERSION = (1, 3, 0)
+PLUGIN_VERSION = (1, 4, 0)
 
 CONFIG = {
+    "search_limit": 5,
     "filter_number": 10,
     "tag_user_count": 5,
     "tag_count": 10,
@@ -42,6 +43,15 @@ class BangumiMetadata(Source):
     )
 
     options = [
+        Option(
+            "search_limit",
+            "number",
+            CONFIG["search_limit"],
+            _("搜索主条目结果数量"),
+            _(
+                "搜索时最多返回多少个结果，过少的结果可能会导致无法找到正确的条目，过多的结果可能会导致性能问题"
+            ),
+        ),
         Option(
             "filter_number",
             "number",
@@ -213,7 +223,7 @@ class BangumiMetadata(Source):
             },
         }
 
-        url = f"{BANGUMI_API_URL}/search/subjects?limit=3"
+        url = f"{BANGUMI_API_URL}/search/subjects?limit={CONFIG['search_limit']}"
         headers = self.headers
 
         req_body = json.dumps(payload).encode("utf-8")
