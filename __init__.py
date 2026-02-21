@@ -1,3 +1,4 @@
+import difflib
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.request import Request, urlopen
@@ -118,7 +119,8 @@ class BangumiMetadata(Source):
     def _parse_data(self, data):
         book = {}
 
-        book["title"] = data["name_cn"] or data["name"]
+        book["title"] = data.get("name", "")
+        book["title_cn"] = data.get("name_cn", "")
         book["authors"] = self._parse_infobox(
             data.get("infobox", []), ["作者", "原作", "作画", "插图", "插画"]
         )
@@ -141,7 +143,7 @@ class BangumiMetadata(Source):
         return book
 
     def _to_metadata(self, book):
-        mi = Metadata(book["title"], book["authors"])
+        mi = Metadata(book["title_cn"] or book["title"], book["authors"])
         mi.cover = book["cover"]
         mi.tags = book["tags"]
         mi.pubdate = book["pubdate"]
@@ -251,6 +253,7 @@ class BangumiMetadata(Source):
         timeout=30,
     ):
         books = []
+        valid_books = []
 
         bangumi_id = identifiers.get("bgm", None)
         if bangumi_id is not None:
@@ -263,15 +266,15 @@ class BangumiMetadata(Source):
             books.append(book)
         else:
             log.info("No Bangumi ID Provided...")
-            log.info("Found book by Title: %s", title)
+            log.info(f"Found book by Title: {title}")
 
             bangumi_ids = self._search_by_title(log, title)
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                books.extend(
-                    executor.map(lambda id: self._query_subject(log, id), bangumi_ids)
-                )
+            # with ThreadPoolExecutor(max_workers=5) as executor:
+            #     books.extend(
+            #         executor.map(lambda id: self._query_subject(log, id), bangumi_ids)
+            #     )
 
-            child_ids = set()
+            child_ids = set(bangumi_ids)
             with ThreadPoolExecutor(max_workers=5) as executor:
                 related_ids = executor.map(
                     lambda id: self._query_subject_relations(log, id), bangumi_ids
@@ -287,7 +290,37 @@ class BangumiMetadata(Source):
                 )
 
         log.info(f"Found {len(books)} books in total.")
-        for book in books:
+
+        if title and books:
+            search_title = title.lower()
+            scored_books = []
+
+            for book in books:
+                if book is None:
+                    continue
+
+                title_orig = book.get("title", "").lower()
+                title_cn = book.get("title_cn", "").lower()
+
+                score_orig = difflib.SequenceMatcher(
+                    None, search_title, title_orig
+                ).ratio()
+                score_cn = difflib.SequenceMatcher(None, search_title, title_cn).ratio()
+
+                if search_title in title_orig or search_title in title_cn:
+                    score = 1.0
+                else:
+                    score = max(score_orig, score_cn)
+
+                scored_books.append((score, book))
+
+            scored_books.sort(key=lambda x: x[0], reverse=True)
+
+            valid_books = [book for score, book in scored_books[:10]]
+        else:
+            valid_books = [book for book in books if book is not None][:10]
+
+        for book in valid_books:
             mi = self._to_metadata(book)
 
             bangumi_id = mi.identifiers["bgm"]
@@ -348,7 +381,7 @@ if __name__ == "__main__":
             # ),
             (
                 {
-                    "title": "overlord 19",
+                    "title": "欢迎来到实力至上主义的教室 0",
                 },
                 [],
             ),
