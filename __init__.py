@@ -10,7 +10,7 @@ from calibre.utils.date import parse_date
 BANGUMI_BASE_URL = "https://bangumi.tv"
 BANGUMI_API_URL = "https://api.bgm.tv/v0"
 
-PLUGIN_VERSION = (1, 0, 0)
+PLUGIN_VERSION = (1, 1, 0)
 
 CONFIG = {
     "tag_user_count": 5,
