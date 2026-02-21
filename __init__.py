@@ -1,6 +1,6 @@
 import difflib
 import json
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.request import Request, urlopen
 
 from calibre.ebooks.metadata.book.base import Metadata
@@ -10,7 +10,7 @@ from calibre.utils.date import parse_date
 BANGUMI_BASE_URL = "https://bangumi.tv"
 BANGUMI_API_URL = "https://api.bgm.tv/v0"
 
-PLUGIN_VERSION = (1, 2, 0)
+PLUGIN_VERSION = (1, 3, 0)
 
 CONFIG = {
     "filter_number": 10,
@@ -129,6 +129,7 @@ class BangumiMetadata(Source):
 
         book["title"] = data.get("name", "")
         book["title_cn"] = data.get("name_cn", "")
+        book["title_filter"] = f"{book['title_cn']} {book['title']}"
         book["authors"] = self._parse_infobox(
             data.get("infobox", []), ["作者", "原作", "作画", "插图", "插画"]
         )
@@ -277,50 +278,68 @@ class BangumiMetadata(Source):
             log.info(f"Found book by Title: {title}")
 
             bangumi_ids = self._search_by_title(log, title)
-            # with ThreadPoolExecutor(max_workers=5) as executor:
-            #     books.extend(
-            #         executor.map(lambda id: self._query_subject(log, id), bangumi_ids)
-            #     )
 
-            child_ids = set(bangumi_ids)
+            subjects_map = {}
             with ThreadPoolExecutor(max_workers=5) as executor:
-                related_ids = executor.map(
-                    lambda id: self._query_subject_relations(log, id), bangumi_ids
-                )
+                for book in executor.map(
+                    lambda id: self._query_subject(log, id), bangumi_ids
+                ):
+                    if book:
+                        subjects_map[book["identifier:bgm"]] = book
+                        books.append(book)
 
-                for sublist in related_ids:
-                    if sublist:
-                        child_ids.update(sublist)
-
+            c2p = {}
             with ThreadPoolExecutor(max_workers=5) as executor:
-                books.extend(
-                    executor.map(lambda id: self._query_subject(log, id), child_ids)
-                )
+                futures = {
+                    executor.submit(self._query_subject_relations, log, id): id
+                    for id in bangumi_ids
+                }
+                for future in as_completed(futures):
+                    pid = futures[future]
+                    cids = future.result()
+                    for cid in cids:
+                        c2p[cid] = pid
+
+            child_ids = list(c2p.keys())
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                for book in executor.map(
+                    lambda id: self._query_subject(log, id), child_ids
+                ):
+                    if not book:
+                        continue
+
+                    pid = c2p.get(book["identifier:bgm"])
+                    pbook = subjects_map.get(pid)
+
+                    if pbook:
+                        title_cn = pbook.get("title_cn", "")
+                        if not book.get("title_cn") and title_cn:
+                            book["title_filter"] = f"{title_cn} {book['title']}"
+
+                    books.append(book)
 
         log.info(f"Found {len(books)} books in total.")
 
         if title and books:
             search_title = title.lower()
+            search_token = search_title.split()
             scored_books = []
 
             for book in books:
                 if book is None:
                     continue
 
-                title_orig = book.get("title", "").lower()
-                title_cn = book.get("title_cn", "").lower()
+                title_filter = book.get("title_filter", "").lower()
 
-                score_orig = difflib.SequenceMatcher(
-                    None, search_title, title_orig
+                matches = sum(1 for token in search_token if token in title_filter)
+                score = matches / len(search_token)
+                sim_score = difflib.SequenceMatcher(
+                    None, search_title, title_filter
                 ).ratio()
-                score_cn = difflib.SequenceMatcher(None, search_title, title_cn).ratio()
 
-                if search_title in title_orig or search_title in title_cn:
-                    score = 1.0
-                else:
-                    score = max(score_orig, score_cn)
+                final_score = score * 10 + sim_score
 
-                scored_books.append((score, book))
+                scored_books.append((final_score, book))
 
             scored_books.sort(key=lambda x: x[0], reverse=True)
 
