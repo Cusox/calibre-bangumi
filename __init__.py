@@ -1,6 +1,6 @@
 import difflib
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from urllib.request import Request, urlopen
 
 from calibre.ebooks.metadata.book.base import Metadata
@@ -10,9 +10,10 @@ from calibre.utils.date import parse_date
 BANGUMI_BASE_URL = "https://bangumi.tv"
 BANGUMI_API_URL = "https://api.bgm.tv/v0"
 
-PLUGIN_VERSION = (1, 1, 0)
+PLUGIN_VERSION = (1, 2, 0)
 
 CONFIG = {
+    "filter_number": 10,
     "tag_user_count": 5,
     "tag_count": 10,
 }
@@ -41,6 +42,13 @@ class BangumiMetadata(Source):
     )
 
     options = [
+        Option(
+            "filter_number",
+            "number",
+            CONFIG["filter_number"],
+            _("过滤后的最大结果数量"),
+            _("过滤后最多保留多少个结果，过多的结果可能会导致性能问题"),
+        ),
         Option(
             "tag_user_count",
             "number",
@@ -316,9 +324,13 @@ class BangumiMetadata(Source):
 
             scored_books.sort(key=lambda x: x[0], reverse=True)
 
-            valid_books = [book for score, book in scored_books[:10]]
+            valid_books = [
+                book for score, book in scored_books[: CONFIG["filter_number"]]
+            ]
         else:
-            valid_books = [book for book in books if book is not None][:10]
+            valid_books = [book for book in books if book is not None][
+                : CONFIG["filter_number"]
+            ]
 
         for book in valid_books:
             mi = self._to_metadata(book)
@@ -362,7 +374,6 @@ class BangumiMetadata(Source):
 
 if __name__ == "__main__":
     from calibre.ebooks.metadata.sources.test import (
-        authors_test,
         test_identify_plugin,
         title_test,
     )
